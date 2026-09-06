@@ -1,0 +1,85 @@
+name: Release SSH proxy executables
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: windows-latest
+            artifact: trapeze-ssh-proxy-windows-x64.exe
+            upload: ssh-proxy-windows-x64
+          - runner: ubuntu-latest
+            artifact: trapeze-ssh-proxy-linux-x64
+            upload: ssh-proxy-linux-x64
+          - runner: ubuntu-24.04-arm
+            artifact: trapeze-ssh-proxy-linux-arm64
+            upload: ssh-proxy-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+          cache: npm
+      - run: npm ci
+      - name: Verify release version
+        shell: bash
+        run: node -e "import('./src/sshProxyCli.js').then(({ SSH_PROXY_VERSION }) => { const tag = process.env.GITHUB_REF_NAME.replace(/^v/, ''); if (SSH_PROXY_VERSION !== tag) throw new Error('SSH proxy version ' + SSH_PROXY_VERSION + ' does not match tag ' + tag); })"
+      - name: Run SSH proxy tests
+        run: npx vitest run tests/sshProxy.test.js tests/sshProxyBundle.test.js tests/tunnelSsh.test.js
+      - name: Build and smoke-test native executable
+        run: npm run build:ssh-proxy-native
+      - name: Sign Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+        run: |
+          if (-not $env:SIGNING_PFX_BASE64 -or -not $env:SIGNING_PFX_PASSWORD) {
+            throw 'Windows signing secrets are required; unsigned releases are blocked.'
+          }
+          $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          $artifact = 'dist/native/trapeze-ssh-proxy-windows-x64.exe'
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw 'signtool.exe was not found.' }
+          & $signtool sign /f $certificate /p $env:SIGNING_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Windows executable signing failed.' }
+          & $signtool verify /pa /v $artifact
+          if ($LASTEXITCODE -ne 0) { throw 'Windows executable signature verification failed.' }
+          Remove-Item $certificate -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.upload }}
+          path: dist/native/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ssh-proxy-*
+          path: dist/release
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist/release
+        run: sha256sum trapeze-ssh-proxy-* > SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/release/* install.sh install.ps1 --verify-tag --generate-notes --title "ioTrapeze SSH Proxy $GITHUB_REF_NAME"
