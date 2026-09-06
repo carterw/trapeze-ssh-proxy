@@ -13,7 +13,7 @@ curl -sSL https://github.com/carterw/trapeze-ssh-proxy/raw/main/install.sh | bas
 ### Windows (PowerShell, as Administrator)
 
 ```powershell
-irm https://github.com/carterw/trapeze-ssh-proxy/raw/main/install.ps1 | iex -Version 0.1.0
+& ([scriptblock]::Create((irm https://github.com/carterw/trapeze-ssh-proxy/raw/main/install.ps1))) -Version 0.1.0
 ```
 
 The installer downloads the native executable for your platform, verifies its SHA-256 checksum, installs it, and prints the `~/.ssh/config` snippet.
@@ -45,21 +45,46 @@ Host *.morphites.com
     ProxyCommand /usr/local/bin/trapeze-ssh-proxy wss://%h/ws/ssh --token-env TRAPEZE_SSH_TOKEN
 ```
 
-**Windows:**
+**Windows (PowerShell):**
+
+Windows OpenSSH uses `C:\Users\<user>\.ssh\config`. This is a separate
+file from Cygwin's `~/.ssh/config` — each must be configured independently.
 
 ```sshconfig
 Host *.morphites.com
     ProxyCommand "C:/Program Files/ioTrapeze/trapeze-ssh-proxy.exe" wss://%h/ws/ssh --token-env TRAPEZE_SSH_TOKEN
 ```
 
-**Cygwin on Windows (locally-built executable):**
+If you installed to a user-writable path instead:
+
+```sshconfig
+Host *.morphites.com
+    ProxyCommand "C:/Users/<user>/AppData/Local/ioTrapeze/trapeze-ssh-proxy.exe" wss://%h/ws/ssh --token-env TRAPEZE_SSH_TOKEN
+```
+
+**Cygwin on Windows:**
+
+Cygwin's OpenSSH can launch a native Windows executable directly. Use a
+Windows-style path (`X:/...`) rather than a Cygwin-style path
+(`/cygdrive/x/...`), because the Node SEA binary interprets Cygwin paths
+as literal Windows directories. If you built the native executable locally
+with `npm run build:ssh-proxy-native`, reference it directly:
 
 ```sshconfig
 Host *.morphites.com
     ProxyCommand X:/ioTrapeze/proxycontroller/dist/native/trapeze-ssh-proxy-windows-x64.exe wss://%h/ws/ssh --token-env TRAPEZE_SSH_TOKEN
 ```
 
+If you installed it via `install.ps1`, use the installed path instead:
+
+```sshconfig
+Host *.morphites.com
+    ProxyCommand "C:/Program Files/ioTrapeze/trapeze-ssh-proxy.exe" wss://%h/ws/ssh --token-env TRAPEZE_SSH_TOKEN
+```
+
 Replace `*.morphites.com` with your device domain suffix if different.
+
+Without the ProxyCommand entry, Windows OpenSSH connects directly to port 22 on the controller host instead of tunneling through WSS. If `ssh -v` shows `Connecting to <host> port 22` rather than invoking the proxy, the config entry is missing or in the wrong file.
 
 ### 2. Generate a temporary token
 
